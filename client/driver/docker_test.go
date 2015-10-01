@@ -200,6 +200,9 @@ func taskTemplate() *structs.Task {
 }
 
 func TestDocker_StartN(t *testing.T) {
+	if !dockerLocated() {
+		t.SkipNow()
+	}
 
 	task1 := taskTemplate()
 	task1.Resources.Networks[0].ReservedPorts[0] = 11111
@@ -243,6 +246,9 @@ func TestDocker_StartN(t *testing.T) {
 }
 
 func TestDocker_StartNVersions(t *testing.T) {
+	if !dockerLocated() {
+		t.SkipNow()
+	}
 
 	task1 := taskTemplate()
 	task1.Config["image"] = "redis"

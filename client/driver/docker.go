@@ -39,7 +39,7 @@ func NewDockerDriver(ctx *DriverContext) Driver {
 
 func (d *DockerDriver) Fingerprint(cfg *config.Config, node *structs.Node) (bool, error) {
 	// Initialize docker API client
-	dockerEndpoint := d.config.ReadDefault("docker.endpoint", "unix:///var/run/docker.sock")
+	dockerEndpoint := d.config.Read("docker.endpoint")
 	client, err := docker.NewClient(dockerEndpoint)
 	if err != nil {
 		return false, nil
