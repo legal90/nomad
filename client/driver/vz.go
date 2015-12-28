@@ -24,6 +24,11 @@ var (
 	reVzVersion = regexp.MustCompile(`vzctl\D*(\d+.\d+.\d+)`)
 )
 
+const (
+	// Factor used to convert Mbytes to number of memory pages. For x86 page size is 4Kb
+	pagesFactor = 1024 / 4
+)
+
 // VzDriver is a driver for running Virtuozzo containers
 // We attempt to chose sane defaults for now, with more configuration available
 // planned in the future
@@ -96,15 +101,15 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 	if !ok || source == "" {
 		return nil, fmt.Errorf("Missing OS template for VZ driver")
 	}
-	// if task.Resources == nil {
-	// 	return nil, fmt.Errorf("Resources are not specified")
-	// }
-	// if task.Resources.MemoryMB == 0 {
-	// 	return nil, fmt.Errorf("Memory limit cannot be zero")
-	// }
-	// if task.Resources.CPU == 0 {
-	// 	return nil, fmt.Errorf("CPU limit cannot be zero")
-	// }
+	if task.Resources == nil {
+		return nil, fmt.Errorf("Resources are not specified")
+	}
+	if task.Resources.MemoryMB == 0 {
+		return nil, fmt.Errorf("Memory limit cannot be zero")
+	}
+	if task.Resources.CPU == 0 {
+		return nil, fmt.Errorf("CPU limit cannot be zero")
+	}
 
 	ctID := randomCTID()
 
@@ -131,7 +136,7 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 	d.logger.Printf("[INFO] driver.vz: Created VZ container: %s", ctID)
 
 	// Configure the container
-	memPages := fmt.Sprintf("%d", task.Resources.MemoryMB*256) // Page size is 4Kb for x86
+	memPages := fmt.Sprintf("%d", task.Resources.MemoryMB*pagesFactor)
 	cpuLimit := fmt.Sprintf("%dm", task.Resources.CPU)
 	outBytes, err = exec.Command("vzctl", "set", ctID,
 		"--physpages", memPages,
@@ -144,17 +149,6 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 	}
 
 	// TODO: Implement network configuration
-
-	// Start the VM
-	outBytes, err = exec.Command("vzctl", "start", ctID, "--wait").CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("Error starting VZ container: %s\n\nOutput: %s",
-			err, string(outBytes))
-	}
-	d.logger.Printf("[INFO] driver.vz: Started VZ container: %s", ctID)
-
-	// It takes some time for container
-	// time.Sleep(2 * time.Second)
 
 	// Create and Return Handle
 	h := &vzHandle{
@@ -172,17 +166,6 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 // Open tries to reopen a previousely allocated task
 func (d *VzDriver) Open(ctx *ExecContext, handleID string) (DriverHandle, error) {
 	d.logger.Print("[DEBUG] driver.vz: Open() is invoked")
-
-	cmd := exec.Command("vzlist", handleID, "-o", "status", "--no-header")
-	outBytes, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("Failed to list VZ container %s: %v", handleID, err)
-	}
-
-	status := strings.TrimSpace(string(outBytes))
-	if status != "running" {
-		return nil, fmt.Errorf("VZ container %s is in '%s' state. Expected: 'running'", handleID, status)
-	}
 
 	// Return a driver handle
 	h := &vzHandle{
@@ -218,6 +201,10 @@ func (h *vzHandle) Update(task *structs.Task) error {
 
 // Kill frocely stops and deletes the VM
 func (h *vzHandle) Kill() error {
+	// Close the "doneСР" channel to prevent container auto-recovery
+	h.logger.Print("[DEBUG] driver.vz: Closing channel 'doneCh'")
+	close(h.doneCh)
+
 	// Start the VM
 	outBytes, err := exec.Command("vzctl", "stop", h.ctID).CombinedOutput()
 	if err != nil {
@@ -239,33 +226,64 @@ func (h *vzHandle) Kill() error {
 func (h *vzHandle) run() {
 	var res cstructs.WaitResult
 
+OUTER:
 	for {
-		cmd := exec.Command("vzlist", h.ctID, "-o", "status", "--no-header")
-		outBytes, err := cmd.Output()
+		// Skip recovery if "doneCh" is closed
+		select {
+		case <-h.doneCh:
+			h.logger.Print("[DEBUG] driver.vz: Channel 'doneCh' is closed. We are done ")
+			res.ExitCode = 0
+			break OUTER
+		default:
+		}
+
+		status, err := CTState(h.ctID)
 		if err != nil {
-			h.logger.Print("[DEBUG] driver.vz: VZ container does not exist!")
 			res.ExitCode = 1
 			res.Err = err
 			break
 		}
 
-		status := strings.TrimSpace(string(outBytes))
-		if status != "running" {
-			h.logger.Printf("[DEBUG] driver.vz: VZ container is not running! State: %s", status)
-			res.ExitCode = 0
-			break
+		if status != "running" && status != "mounting" {
+			h.logger.Printf("[DEBUG] driver.vz: VZ container is in state '%s'. Starting...", status)
+
+			// Start the container
+			if err = startCT(h.ctID); err != nil {
+				h.logger.Print(err)
+				res.ExitCode = 1
+				res.Err = err
+				break
+			}
+			h.logger.Printf("[INFO] driver.vz: Started VZ container: %s", h.ctID)
 		}
 
 		// Wait before retry
 		time.Sleep(5 * time.Second)
 	}
 
-	h.logger.Print("[DEBUG] driver.vz: Closing channel 'doneCh'")
-	close(h.doneCh)
-
 	h.waitCh <- &res
 	h.logger.Print("[DEBUG] driver.vz: Closing channel 'waitCh'")
 	close(h.waitCh)
+}
+
+// CTState returns the state of specified container (running, stopped, etc)
+func CTState(ctID string) (string, error) {
+	outBytes, err := exec.Command("vzlist", ctID, "-o", "status", "--no-header").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("Failed to list VZ container %s: %s\n\nOutput: %s",
+			ctID, err, string(outBytes))
+	}
+	return strings.TrimSpace(string(outBytes)), nil
+}
+
+// startCT runs the specified container
+func startCT(ctID string) error {
+	outBytes, err := exec.Command("vzctl", "start", ctID, "--wait").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("Failed to start VZ container %s: %s\n\nOutput: %s",
+			ctID, err, string(outBytes))
+	}
+	return nil
 }
 
 // randomCTID generates a pseudo-random container ID. It ensures that such ID
