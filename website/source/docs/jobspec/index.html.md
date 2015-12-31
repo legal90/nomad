@@ -156,6 +156,24 @@ The `job` object supports the following keys:
   and "h" suffix can be used, such as "30s". Both values default to zero,
   which disables rolling updates.
 
+*   `periodic` - `periodic` allows the job to be scheduled at fixed times, dates
+    or intervals. The `periodic` block has the following configuration:
+
+    ```
+    periodic {
+        // Enabled is defaulted to true if the block is included. It can be set
+        // to false to pause the periodic job from running.
+        enabled = true
+
+        // A cron expression configuring the interval the job is launched at.
+        // Supports predefined expressions such as "@daily" and "@weekly"
+        cron = "*/15 * * * * *"
+    }
+    ```
+
+    `cron`: See [here](https://github.com/gorhill/cronexpr#implementation)
+    for full documentation of supported cron specs and the predefined expressions.
+
 ### Task Group
 
 The `group` object supports the following keys:
@@ -338,6 +356,10 @@ Below is a table documenting the variables that can be interpreted:
   <tr>
     <td>$node.name</td>
     <td>The client node name</td>
+  </tr>
+  <tr>
+    <td>$node.class</td>
+    <td>The client node class</td>
   </tr>
   <tr>
     <td>$attr.\<key\></td>
