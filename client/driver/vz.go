@@ -244,9 +244,9 @@ OUTER:
 			break
 		}
 
-		if status != "running" && status != "mounting" {
+		switch status {
+		case "stopped", "suspended", "mounted":
 			h.logger.Printf("[DEBUG] driver.vz: VZ container is in state '%s'. Starting...", status)
-
 			// Start the container
 			if err = startCT(h.ctID); err != nil {
 				h.logger.Print(err)
