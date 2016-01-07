@@ -101,15 +101,6 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 	if !ok || source == "" {
 		return nil, fmt.Errorf("Missing OS template for VZ driver")
 	}
-	if task.Resources == nil {
-		return nil, fmt.Errorf("Resources are not specified")
-	}
-	if task.Resources.MemoryMB == 0 {
-		return nil, fmt.Errorf("Memory limit cannot be zero")
-	}
-	if task.Resources.CPU == 0 {
-		return nil, fmt.Errorf("CPU limit cannot be zero")
-	}
 
 	ctID := randomCTID()
 
@@ -135,20 +126,27 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 	}
 	d.logger.Printf("[INFO] driver.vz: Created VZ container: %s", ctID)
 
+	// Build the "set" command.
+	setArgs := []string{"set", ctID, "--save"}
+
 	// Configure the container
-	memPages := fmt.Sprintf("%d", task.Resources.MemoryMB*pagesFactor)
-	cpuLimit := fmt.Sprintf("%dm", task.Resources.CPU)
-	outBytes, err = exec.Command("vzctl", "set", ctID,
-		"--physpages", memPages,
-		"--cpulimit", cpuLimit,
-		"--save",
-	).CombinedOutput()
+	if task.Resources.CPU != 0 {
+		cpuLimit := fmt.Sprintf("%dm", task.Resources.CPU)
+		setArgs = append(setArgs, fmt.Sprintf("--cpulimit=%v", cpuLimit))
+	}
+
+	if task.Resources.MemoryMB != 0 {
+		memPages := fmt.Sprintf("%d", task.Resources.MemoryMB*pagesFactor)
+		setArgs = append(setArgs, fmt.Sprintf("--physpages=%v", memPages))
+	}
+
+	// TODO: Implement network configuration
+
+	outBytes, err = exec.Command("vzctl", setArgs...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("Error configuring VZ container: %s\n\nOutput: %s",
 			err, string(outBytes))
 	}
-
-	// TODO: Implement network configuration
 
 	// Create and Return Handle
 	h := &vzHandle{
