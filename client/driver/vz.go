@@ -118,10 +118,10 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 
 	// Check if the user has overriden "private" and "root".
 	if privatePath, ok := task.Config["private_path"]; ok {
-		createArgs = append(createArgs, fmt.Sprintf("--private=%v", privatePath))
+		createArgs = append(createArgs, fmt.Sprintf("--private='%v'", privatePath))
 	}
 	if rootPath, ok := task.Config["root_path"]; ok {
-		createArgs = append(createArgs, fmt.Sprintf("--root=%v", rootPath))
+		createArgs = append(createArgs, fmt.Sprintf("--root='%v'", rootPath))
 	}
 	if configName, ok := task.Config["config_name"]; ok {
 		createArgs = append(createArgs, fmt.Sprintf("--config=%v", configName))
