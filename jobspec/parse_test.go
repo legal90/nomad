@@ -121,6 +121,7 @@ func TestParse(t *testing.T) {
 										},
 									},
 								},
+								KillTimeout: 22 * time.Second,
 							},
 							&structs.Task{
 								Name:   "storagelocker",
@@ -235,9 +236,10 @@ func TestParse(t *testing.T) {
 				Region:   "global",
 				Type:     "service",
 				Periodic: &structs.PeriodicConfig{
-					Enabled:  true,
-					SpecType: structs.PeriodicSpecCron,
-					Spec:     "*/5 * * *",
+					Enabled:         true,
+					SpecType:        structs.PeriodicSpecCron,
+					Spec:            "*/5 * * *",
+					ProhibitOverlap: true,
 				},
 			},
 			false,

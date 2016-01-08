@@ -26,6 +26,10 @@ func (a *Allocations) List(q *QueryOptions) ([]*AllocationListStub, *QueryMeta, 
 	return resp, qm, nil
 }
 
+func (a *Allocations) PrefixList(prefix string) ([]*AllocationListStub, *QueryMeta, error) {
+	return a.List(&QueryOptions{Prefix: prefix})
+}
+
 // Info is used to retrieve a single allocation.
 func (a *Allocations) Info(allocID string, q *QueryOptions) (*Allocation, *QueryMeta, error) {
 	var resp Allocation
@@ -62,6 +66,7 @@ type Allocation struct {
 type AllocationMetric struct {
 	NodesEvaluated     int
 	NodesFiltered      int
+	NodesAvailable     map[string]int
 	ClassFiltered      map[string]int
 	ConstraintFiltered map[string]int
 	NodesExhausted     int

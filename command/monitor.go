@@ -161,14 +161,15 @@ func (m *monitor) update(update *evalState) {
 
 // monitor is used to start monitoring the given evaluation ID. It
 // writes output directly to the monitor's ui, and returns the
-// exit code for the command.
+// exit code for the command. If allowPrefix is false, monitor will only accept
+// exact matching evalIDs.
 //
 // The return code will be 0 on successful evaluation. If there are
 // problems scheduling the job (impossible constraints, resources
 // exhausted, etc), then the return code will be 2. For any other
 // failures (API connectivity, internal errors, etc), the return code
 // will be 1.
-func (m *monitor) monitor(evalID string) int {
+func (m *monitor) monitor(evalID string, allowPrefix bool) int {
 	// Track if we encounter a scheduling failure. This can only be
 	// detected while querying allocations, so we use this bool to
 	// carry that status into the return code.
@@ -182,8 +183,40 @@ func (m *monitor) monitor(evalID string) int {
 		// Query the evaluation
 		eval, _, err := m.client.Evaluations().Info(evalID, nil)
 		if err != nil {
-			m.ui.Error(fmt.Sprintf("Error reading evaluation: %s", err))
-			return 1
+			if !allowPrefix {
+				m.ui.Error(fmt.Sprintf("No evaluation with id %q found", evalID))
+				return 1
+			}
+
+			evals, _, err := m.client.Evaluations().PrefixList(evalID)
+			if err != nil {
+				m.ui.Error(fmt.Sprintf("Error reading evaluation: %s", err))
+				return 1
+			}
+			if len(evals) == 0 {
+				m.ui.Error(fmt.Sprintf("No evaluation(s) with prefix or id %q found", evalID))
+				return 1
+			}
+			if len(evals) > 1 {
+				// Format the evaluations
+				out := make([]string, len(evals)+1)
+				out[0] = "ID|Priority|Type|TriggeredBy|Status"
+				for i, eval := range evals {
+					out[i+1] = fmt.Sprintf("%s|%d|%s|%s|%s",
+						eval.ID,
+						eval.Priority,
+						eval.Type,
+						eval.TriggeredBy,
+						eval.Status)
+				}
+				m.ui.Output(fmt.Sprintf("Prefix matched multiple evaluations\n\n%s", formatList(out)))
+				return 0
+			}
+			// Prefix lookup matched a single evaluation
+			eval, _, err = m.client.Evaluations().Info(evals[0].ID, nil)
+			if err != nil {
+				m.ui.Error(fmt.Sprintf("Error reading evaluation: %s", err))
+			}
 		}
 
 		// Create the new eval state.
@@ -196,7 +229,7 @@ func (m *monitor) monitor(evalID string) int {
 		state.index = eval.CreateIndex
 
 		// Query the allocations associated with the evaluation
-		allocs, _, err := m.client.Evaluations().Allocations(evalID, nil)
+		allocs, _, err := m.client.Evaluations().Allocations(eval.ID, nil)
 		if err != nil {
 			m.ui.Error(fmt.Sprintf("Error reading allocations: %s", err))
 			return 1
@@ -252,7 +285,7 @@ func (m *monitor) monitor(evalID string) int {
 
 			// Reset the state and monitor the new eval
 			m.state = newEvalState()
-			return m.monitor(eval.NextEval)
+			return m.monitor(eval.NextEval, allowPrefix)
 		}
 		break
 	}
@@ -278,6 +311,14 @@ func dumpAllocStatus(ui cli.Ui, alloc *api.Allocation) {
 	// Print a helpful message if we have an eligibility problem
 	if alloc.Metrics.NodesEvaluated == 0 {
 		ui.Output("  * No nodes were eligible for evaluation")
+	}
+
+	// Print a helpful message if the user has asked for a DC that has no
+	// available nodes.
+	for dc, available := range alloc.Metrics.NodesAvailable {
+		if available == 0 {
+			ui.Output(fmt.Sprintf("  * No nodes are available in datacenter %q", dc))
+		}
 	}
 
 	// Print filter info

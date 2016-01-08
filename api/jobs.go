@@ -47,6 +47,11 @@ func (j *Jobs) List(q *QueryOptions) ([]*JobListStub, *QueryMeta, error) {
 	return resp, qm, nil
 }
 
+// PrefixList is used to list all existing jobs that match the prefix.
+func (j *Jobs) PrefixList(prefix string) ([]*JobListStub, *QueryMeta, error) {
+	return j.List(&QueryOptions{Prefix: prefix})
+}
+
 // Info is used to retrieve information about a particular
 // job given its unique ID.
 func (j *Jobs) Info(jobID string, q *QueryOptions) (*Job, *QueryMeta, error) {
@@ -109,9 +114,10 @@ type UpdateStrategy struct {
 
 // PeriodicConfig is for serializing periodic config for a job.
 type PeriodicConfig struct {
-	Enabled  bool
-	Spec     string
-	SpecType string
+	Enabled         bool
+	Spec            string
+	SpecType        string
+	ProhibitOverlap bool
 }
 
 // Job is used to serialize a job.
@@ -138,6 +144,7 @@ type Job struct {
 // jobs during list operations.
 type JobListStub struct {
 	ID                string
+	ParentID          string
 	Name              string
 	Type              string
 	Priority          int

@@ -71,6 +71,9 @@ type QueryOptions struct {
 	// If set, any follower can service the request. Results
 	// may be arbitrarily stale.
 	AllowStale bool
+
+	// If set, used as prefix for resource list searches
+	Prefix string
 }
 
 func (q QueryOptions) RequestRegion() string {
@@ -891,6 +894,7 @@ func (j *Job) LookupTaskGroup(name string) *TaskGroup {
 func (j *Job) Stub() *JobListStub {
 	return &JobListStub{
 		ID:                j.ID,
+		ParentID:          j.ParentID,
 		Name:              j.Name,
 		Type:              j.Type,
 		Priority:          j.Priority,
@@ -910,6 +914,7 @@ func (j *Job) IsPeriodic() bool {
 // for the job list
 type JobListStub struct {
 	ID                string
+	ParentID          string
 	Name              string
 	Type              string
 	Priority          int
@@ -953,6 +958,9 @@ type PeriodicConfig struct {
 
 	// SpecType defines the format of the spec.
 	SpecType string
+
+	// ProhibitOverlap enforces that spawned jobs do not run in parallel.
+	ProhibitOverlap bool `mapstructure:"prohibit_overlap"`
 }
 
 func (p *PeriodicConfig) Validate() error {
@@ -1016,6 +1024,12 @@ func (p *PeriodicConfig) Next(fromTime time.Time) time.Time {
 
 	return time.Time{}
 }
+
+const (
+	// PeriodicLaunchSuffix is the string appended to the periodic jobs ID
+	// when launching derived instances of it.
+	PeriodicLaunchSuffix = "/periodic-"
+)
 
 // PeriodicLaunch tracks the last launch time of a periodic job.
 type PeriodicLaunch struct {
@@ -1226,14 +1240,18 @@ type ServiceCheck struct {
 func (sc *ServiceCheck) Validate() error {
 	t := strings.ToLower(sc.Type)
 	if t != ServiceCheckTCP && t != ServiceCheckHTTP {
-		return fmt.Errorf("Check with name %v has invalid check type: %s ", sc.Name, sc.Type)
+		return fmt.Errorf("service check must be either http or tcp type")
 	}
 	if sc.Type == ServiceCheckHTTP && sc.Path == "" {
-		return fmt.Errorf("http checks needs the Http path information.")
+		return fmt.Errorf("service checks of http type must have a valid http path")
 	}
 
 	if sc.Type == ServiceCheckScript && sc.Script == "" {
-		return fmt.Errorf("Script checks need the script to invoke")
+		return fmt.Errorf("service checks of script type must have a valid script path")
+	}
+
+	if sc.Interval <= 0 {
+		return fmt.Errorf("service checks must have positive time intervals")
 	}
 	return nil
 }
@@ -1303,6 +1321,12 @@ func (s *Service) Hash() string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+const (
+	// DefaultKillTimeout is the default timeout between signaling a task it
+	// will be killed and killing it.
+	DefaultKillTimeout = 5 * time.Second
+)
+
 // Task is a single process typically that is executed as part of a task group.
 type Task struct {
 	// Name of the task
@@ -1330,11 +1354,20 @@ type Task struct {
 	// Meta is used to associate arbitrary metadata with this
 	// task. This is opaque to Nomad.
 	Meta map[string]string
+
+	// KillTimeout is the time between signaling a task that it will be
+	// killed and killing it.
+	KillTimeout time.Duration `mapstructure:"kill_timeout"`
 }
 
 // InitFields initializes fields in the task.
 func (t *Task) InitFields(job *Job, tg *TaskGroup) {
 	t.InitServiceFields(job.Name, tg.Name)
+
+	// Set the default timeout if it is not specified.
+	if t.KillTimeout == 0 {
+		t.KillTimeout = DefaultKillTimeout
+	}
 }
 
 // InitServiceFields interpolates values of Job, Task Group
@@ -1459,6 +1492,9 @@ func (t *Task) Validate() error {
 	}
 	if t.Resources == nil {
 		mErr.Errors = append(mErr.Errors, errors.New("Missing task resources"))
+	}
+	if t.KillTimeout.Nanoseconds() < 0 {
+		mErr.Errors = append(mErr.Errors, errors.New("KillTimeout must be a positive value"))
 	}
 	for idx, constr := range t.Constraints {
 		if err := constr.Validate(); err != nil {
@@ -1676,6 +1712,9 @@ type AllocMetric struct {
 
 	// NodesFiltered is the number of nodes filtered due to a constraint
 	NodesFiltered int
+
+	// NodesAvailable is the number of nodes available for evaluation per DC.
+	NodesAvailable map[string]int
 
 	// ClassFiltered is the number of nodes filtered by class
 	ClassFiltered map[string]int

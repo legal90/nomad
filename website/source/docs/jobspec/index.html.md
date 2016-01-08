@@ -150,29 +150,55 @@ The `job` object supports the following keys:
   and defaults to `service`. To learn more about each scheduler type visit
   [here](/docs/jobspec/schedulers.html)
 
-* `update` - Specifies the task update strategy. This requires providing
-  `max_parallel` as an integer and `stagger` as a time duration. If stagger
-  is provided as an integer, seconds are assumed. Otherwise the "s", "m",
-  and "h" suffix can be used, such as "30s". Both values default to zero,
-  which disables rolling updates.
+*   `update` - Specifies the task's update strategy. When omitted, rolling
+    updates are disabled. The `update` block supports the following keys:
 
-*   `periodic` - `periodic` allows the job to be scheduled at fixed times, dates
-    or intervals. The `periodic` block has the following configuration:
+    * `max_parallel` - `max_parallel` is given as an integer value and specifies
+      the number of tasks that can be updated at the same time.
+
+    * `stagger` - `stagger` introduces a delay between sets of task updates and
+      is given as an as a time duration. If stagger is provided as an integer,
+      seconds are assumed. Otherwise the "s", "m", and "h" suffix can be used,
+      such as "30s".
+
+    An example `update` block:
 
     ```
-    periodic {
-        // Enabled is defaulted to true if the block is included. It can be set
-        // to false to pause the periodic job from running.
-        enabled = true
+    update {
+        // Update 3 tasks at a time.
+        max_parallel = 3
 
-        // A cron expression configuring the interval the job is launched at.
-        // Supports predefined expressions such as "@daily" and "@weekly"
-        cron = "*/15 * * * * *"
+        // Wait 30 seconds between updates.
+        stagger = "30s"
     }
     ```
 
-    `cron`: See [here](https://github.com/gorhill/cronexpr#implementation)
-    for full documentation of supported cron specs and the predefined expressions.
+*   `periodic` - `periodic` allows the job to be scheduled at fixed times, dates
+    or intervals. The `periodic` block supports the following keys:
+
+    * `enabled` - `enabled` determines whether the periodic job will spawn child
+    jobs. `enabled` is defaulted to true if the block is included.
+
+    * `cron` - A cron expression configuring the interval the job is launched
+    at. Supports predefined expressions such as "@daily" and "@weekly" See
+    [here](https://github.com/gorhill/cronexpr#implementation) for full
+    documentation of supported cron specs and the predefined expressions.
+
+    * `prohibit_overlap` - `prohibit_overlap` can be set to true to enforce that
+    the periodic job doesn't spawn a new instance of the job if any of the
+    previous jobs are still running. It is defaulted to false.
+
+    An example `periodic` block:
+
+    ```
+        periodic {
+            // Launch every 15 minutes
+            cron = "*/15 * * * * *"
+
+            // Do not allow overlapping runs.
+            prohibit_overlap = true
+        }
+    ```
 
 ### Task Group
 
@@ -221,6 +247,10 @@ The `task` object supports the following keys:
   See the resources reference for more details.
 
 * `meta` - Annotates the task group with opaque metadata.
+
+* `kill_timeout` - `kill_timeout` is a time duration that can be specified using
+  the `s`, `m`, and `h` suffixes, such as `30s`. It can be used to configure the
+  time between signaling a task it will be killed and actually killing it.
 
 ### Resources
 
