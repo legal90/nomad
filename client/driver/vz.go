@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"math/rand"
@@ -39,10 +40,37 @@ type VzDriver struct {
 
 // VzDriverConfig struct describes driver configuration
 type VzDriverConfig struct {
-	OSTemplate  string `mapstructure:"os_template"`
-	ConfigName  string `mapstructure:"config_name"`  // /etc/vz/conf/ve-NAME.conf-sample
-	PrivatePath string `mapstructure:"private_path"` // VE_PRIVATE
-	RootPath    string `mapstructure:"root_path"`    // VE_ROOT
+	DNSServers       []string                       `mapstructure:"dns_servers"`
+	DNSSearchDomains []string                       `mapstructure:"dns_search_domains"`
+	Hostname         string                         `mapstructure:"hostname"`
+	OSTemplate       string                         `mapstructure:"os_template"`
+	ConfigName       string                         `mapstructure:"config_name"`  // /etc/vz/conf/ve-NAME.conf-sample
+	PrivatePath      string                         `mapstructure:"private_path"` // VE_PRIVATE
+	RootPath         string                         `mapstructure:"root_path"`    // VE_ROOT
+	NetworksRaw      []map[string][]VZDriverNetwork `mapstructure:"network"`
+	Networks         []VZDriverNetwork              `mapstructure:"-"` // A map of guest interface name and its configuration
+}
+
+// VZDriverNetwork describes container's network configuration
+type VZDriverNetwork struct {
+	Interface   string   // Network interface name
+	IP          []string `mapstructure:"ip"`           // IPv4. Subnet could be appended: "<ip>/<net>"
+	Gateway     string   `mapstructure:"gateway"`      // default gateway for network interface
+	NetworkName string   `mapstructure:"network_name"` // name of the virtual network (for Virtuozzo only!)
+}
+
+// Validate checks the driver configuration
+func (c *VzDriverConfig) Validate(logger *log.Logger) error {
+	for _, n := range c.Networks {
+		if n.Interface == "" {
+			return fmt.Errorf("\"network\" object should be named")
+		}
+		if len(n.IP) == 0 {
+			return fmt.Errorf("[%v] IP list is empty", n.Interface)
+		}
+	}
+
+	return nil
 }
 
 // vzHandle is returned from Start/Open as a handle to the PID
@@ -94,9 +122,23 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 		return nil, err
 	}
 
+	// Parse network configuration
+	for _, in := range driverConfig.NetworksRaw {
+		net := VZDriverNetwork{}
+		for key, val := range in {
+			net = val[0]
+			net.Interface = key
+		}
+		driverConfig.Networks = append(driverConfig.Networks, net)
+	}
+
 	d.logger.Print("[DEBUG] driver.vz: Start() is invoked")
 
 	// Validate task configuration
+	if err := driverConfig.Validate(d.logger); err != nil {
+		return nil, err
+	}
+
 	source, ok := task.Config["os_template"]
 	if !ok || source == "" {
 		return nil, fmt.Errorf("Missing OS template for VZ driver")
@@ -119,10 +161,8 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 	}
 
 	// Create the container
-	outBytes, err := exec.Command("vzctl", createArgs...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("Error creating VZ container: %s\n\nOutput: %s",
-			err, string(outBytes))
+	if err := vzctl(createArgs...); err != nil {
+		return nil, fmt.Errorf("Error creating VZ container: %s", err)
 	}
 	d.logger.Printf("[INFO] driver.vz: Created VZ container: %s", ctID)
 
@@ -140,12 +180,58 @@ func (d *VzDriver) Start(ctx *ExecContext, task *structs.Task) (DriverHandle, er
 		setArgs = append(setArgs, fmt.Sprintf("--physpages=%v", memPages))
 	}
 
-	// TODO: Implement network configuration
+	if len(task.Resources.Networks) != 0 {
+		// TODO add support for more than one network
+		network := task.Resources.Networks[0]
+		if network.MBits != 0 {
+			kbits := network.MBits * 1024
+			setArgs = append(setArgs, fmt.Sprintf("--rate *:1:%v", kbits))
+		}
+	}
 
-	outBytes, err = exec.Command("vzctl", setArgs...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("Error configuring VZ container: %s\n\nOutput: %s",
-			err, string(outBytes))
+	if driverConfig.Hostname != "" {
+		setArgs = append(setArgs, fmt.Sprintf("--hostname=%v", driverConfig.Hostname))
+	}
+
+	if len(driverConfig.DNSSearchDomains) != 0 {
+		for _, s := range driverConfig.DNSSearchDomains {
+			setArgs = append(setArgs, fmt.Sprintf("--searchdomain=%v", s))
+		}
+	}
+
+	if len(driverConfig.DNSServers) != 0 {
+		for _, s := range driverConfig.DNSServers {
+			setArgs = append(setArgs, fmt.Sprintf("--nameserver=%v", s))
+		}
+	}
+
+	if err := vzctl(setArgs...); err != nil {
+		return nil, err
+	}
+
+	// Configure network
+	if len(driverConfig.Networks) != 0 {
+		for _, n := range driverConfig.Networks {
+			netArgs := []string{
+				"set", ctID, "--save",
+				"--netif_add", n.Interface,
+				"--ifname", n.Interface,
+			}
+			for _, ip := range n.IP {
+				netArgs = append(netArgs, fmt.Sprintf("--ip=%v", ip))
+			}
+			if n.Gateway != "" {
+				netArgs = append(netArgs, fmt.Sprintf("--gw=%v", n.Gateway))
+			}
+			if n.NetworkName != "" {
+				// TODO: It works for virtuozzo only!
+				netArgs = append(netArgs, fmt.Sprintf("--network=%v", n.NetworkName))
+			}
+
+			if err := vzctl(netArgs...); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Create and Return Handle
@@ -294,4 +380,16 @@ func randomCTID() string {
 			return strconv.Itoa(id)
 		}
 	}
+}
+
+func vzctl(args ...string) error {
+	var outBuf, errBuf bytes.Buffer
+	cmd := exec.Command("vzctl", args...)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("Error running vzctl command: %s\n\nOutput: %s\n\nError: %s",
+			err, outBuf.String(), errBuf.String())
+	}
+	return nil
 }
